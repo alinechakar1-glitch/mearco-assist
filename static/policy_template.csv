@@ -1,0 +1,2 @@
+policy_number,insured_name,phone,plate,start_date,end_date,towing_entitlement,status
+DEMO-001,Example Client,03000000,123456,2026-01-01,2026-12-31,Review,Active
