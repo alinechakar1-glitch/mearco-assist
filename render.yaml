@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: mearco-assist-demo
+    name: mearco-assist
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
@@ -9,5 +9,7 @@ services:
         sync: false
       - key: SESSION_SECRET
         generateValue: true
-      - key: COOKIE_SECURE
-        value: '1'
+      - key: PUBLIC_INTAKE_ENABLED
+        value: '0'
+      - key: PUBLIC_TRACKING_ENABLED
+        value: '0'

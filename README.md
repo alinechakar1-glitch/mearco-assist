@@ -1,36 +1,28 @@
-# MEARCO Assist 24/7 — standalone prototype (v0.1)
+# MEARCO Assist 24/7 — standalone upgrade v0.2
 
-A small demonstrator covering login, policy entry/import, new assistance cases, simulated dispatch/status updates and an immutable append-only case-events table (within the prototype application).
+Standalone starter upgraded with a customer-facing `/assist` page, private `/track` case status, protected MEARCO dashboard `/`, Excel upload `/policies`, and a separate provider job board `/provider`. Telephone, SMS, WhatsApp, live vehicle tracking and AI are **not** integrated. No automated alert or dispatch is performed.
 
-## DO NOT USE FOR REAL CUSTOMERS YET
+## Deploy
+Replace the repository files with all contents of this folder, preserving `templates/` and `static/`. Same Render Web Service, same start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`; build: `pip install -r requirements.txt`.
 
-This is a training/demo starter. It has a single shared demo password, no separate operator/provider access roles, no CSRF defenses, SQLite local disk storage, no telephone/WhatsApp integration, no backups and no production privacy controls. **Do not import real policyholder data or accept real assistance requests.** It is NOT a 24/7 production service.
+Required Render environment variables:
+- `ADMIN_PASSWORD` unique strong credential
+- `SESSION_SECRET` random 32+ character secret
 
-## Local startup
+Optional:
+- `PROVIDER_PASSWORD` separate strong password (required for provider login)
+- `PUBLIC_INTAKE_ENABLED=0` (default; set to `1` **only after** staffed monitoring, privacy/security approval and durable database setup)
+- `PUBLIC_TRACKING_ENABLED=0` (default; set to `1` only when public intake is approved)
+- `DB_PATH=/var/data/assist.sqlite3` **only when Render persistent disk is mounted at `/var/data`**. Otherwise this demo stores SQLite in ephemeral app filesystem and data may vanish on deploy/restart.
 
-1. Install Python 3.11+.
-2. `pip install -r requirements.txt`
-3. Set environment variables `ADMIN_PASSWORD` (a strong private demo password) and `SESSION_SECRET` (random 32+ characters).
-4. For local HTTP-only testing set `COOKIE_SECURE=0`. Leave `COOKIE_SECURE=1` on HTTPS deployments.
-5. Run `uvicorn main:app --reload`.
-6. Visit http://localhost:8000 and log in.
+## Safety and release restrictions
+This is an **internal TEST prototype**. It uses a single administrator password, a shared provider password and SQLite; this is NOT production-ready identity management. Public intake is disabled by default. Do not use real customers, policyholder data, claims, or telephone numbers. Do not advertise this as an active 24/7 service. No real call/WhatsApp/notification, on-call coverage guarantee, automatic ETA, or automatic towing dispatch exists. The on-prem or Render database should be secured with backups and tested restore, individual staff identities/MFA, role-scoped provider accounts, privacy notice/consent/retention, centralized abuse protection/WAF and scheduled security review before enabling production.
 
-## Deploy a demo to Render
+## Demo testing
+1. Login `/login` with `ADMIN_PASSWORD`. Add fake case at `/`.
+2. Assign a sample towing provider via case details.
+3. Set `PROVIDER_PASSWORD`, open `/provider/login`, update dispatch and inspect audit trail.
+4. Add fake policy via `/policies` or import template `static/policy_template.csv`.
+5. Visit `/assist`. It deliberately displays a not-yet-active notice until production prerequisites have been satisfied.
 
-1. Create a **private GitHub repository** named `mearco-assist` and upload these files, retaining folder structure.
-2. In Render create a new Web Service connected to that GitHub repository, or deploy using `render.yaml`.
-3. Python build: `pip install -r requirements.txt`.
-4. Start: `uvicorn main:app --host 0.0.0.0 --port $PORT`.
-5. Add `ADMIN_PASSWORD` and `SESSION_SECRET` as secret environment variables; keep `COOKIE_SECURE=1`.
-6. Open the Render URL for testing with fictional data only.
-
-**Important:** SQLite on Render without a persistent disk can be wiped on redeploy/restart. The next version must use PostgreSQL with migrations and backups before genuine data is entered. Render free web instances also spin down when idle and are not adequate for 24/7 response.
-
-## Future phases
-
-- PostgreSQL; users/roles; password reset/MFA; audit/security controls; CSRF; backups.
-- Rule-based verified towing eligibility, detailed policy imports.
-- Towing contractor portal isolated from MEARCO customer data.
-- WhatsApp integration with authorized Business Platform provider.
-- Hosted phone system, IVR and actual 24/7 MEARCO agent roster.
-- Incident safety escalation, dispatch timers, complaint handling, notification service.
+IMPORTANT: If you change from ephemeral SQLite to persistent PostgreSQL later, implement a tested migration instead of assuming the old records will move automatically.
