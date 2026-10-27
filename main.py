@@ -22,6 +22,9 @@ if not ADMIN_PASSWORD or not SESSION_SECRET:
     raise RuntimeError('Set ADMIN_PASSWORD and SESSION_SECRET environment variables before starting')
 app=FastAPI(title='MEARCO Assist 24/7 — Standalone')
 
+@app.get('/version')
+def version(): return {'version': '0.2.2', 'origin_fix': 'public-base-url'}
+
 @app.middleware('http')
 async def security_headers(request,call_next):
     response=await call_next(request)
@@ -62,19 +65,23 @@ def new_csrf(req):
     return req.session['csrf']
 def csrf_ok(req,token): return bool(token) and secrets.compare_digest(str(token),str(req.session.get('csrf','')))
 def check_origin(req):
-    # Render terminates HTTPS before forwarding traffic to the Python server.
-    # req.url.scheme can therefore be http even when the browser sends
-    # Origin: https://mearco-assist.onrender.com.
-    origin=req.headers.get('origin','').strip().rstrip('/')
-    hostname=req.headers.get('host','').strip().lower()
-    allowed=set(TRUSTED_ORIGINS)
-    if hostname:
-        allowed.add(f'https://{hostname}')
-        # Local development is allowed over HTTP; the public Render domain is not.
-        if hostname.startswith(('localhost','127.0.0.1')):
-            allowed.add(f'http://{hostname}')
-    if origin and origin not in allowed:
-        raise HTTPException(403,'Origin not allowed')
+    # Validate browser origins against the public HTTPS site, not Render's
+    # internal proxy HTTP scheme. Keep CSRF tokens mandatory on all writes.
+    from urllib.parse import urlsplit
+    origin = req.headers.get('origin', '').strip().rstrip('/')
+    if not origin:
+        return  # Non-browser callers must still supply the session CSRF token.
+    parsed = urlsplit(origin)
+    if parsed.scheme not in ('https', 'http') or not parsed.hostname:
+        raise HTTPException(403, 'Origin not allowed')
+    configured = os.environ.get('PUBLIC_BASE_URL', 'https://mearco-assist.onrender.com').strip().rstrip('/')
+    allowed = {configured, *TRUSTED_ORIGINS}
+    # Loopback only for local developer testing.
+    host = req.headers.get('host', '').strip().lower()
+    if host.startswith(('localhost:', '127.0.0.1:')) or host in ('localhost','127.0.0.1'):
+        allowed.add('http://' + host)
+    if origin.lower() not in {a.lower() for a in allowed}:
+        raise HTTPException(403, 'Origin not allowed')
 
 def enforce_csrf(req,token):
     check_origin(req)
