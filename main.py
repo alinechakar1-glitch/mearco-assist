@@ -23,7 +23,7 @@ if not ADMIN_PASSWORD or not SESSION_SECRET:
 app=FastAPI(title='MEARCO Assist 24/7 — Standalone')
 
 @app.get('/version')
-def version(): return {'version': '0.2.2', 'origin_fix': 'public-base-url'}
+def version(): return {'version': '0.2.3', 'csrf_protection': 'session-form-token'}
 
 @app.middleware('http')
 async def security_headers(request,call_next):
@@ -64,28 +64,14 @@ def new_csrf(req):
     if not req.session.get('csrf'): req.session['csrf']=secrets.token_urlsafe(24)
     return req.session['csrf']
 def csrf_ok(req,token): return bool(token) and secrets.compare_digest(str(token),str(req.session.get('csrf','')))
-def check_origin(req):
-    # Validate browser origins against the public HTTPS site, not Render's
-    # internal proxy HTTP scheme. Keep CSRF tokens mandatory on all writes.
-    from urllib.parse import urlsplit
-    origin = req.headers.get('origin', '').strip().rstrip('/')
-    if not origin:
-        return  # Non-browser callers must still supply the session CSRF token.
-    parsed = urlsplit(origin)
-    if parsed.scheme not in ('https', 'http') or not parsed.hostname:
-        raise HTTPException(403, 'Origin not allowed')
-    configured = os.environ.get('PUBLIC_BASE_URL', 'https://mearco-assist.onrender.com').strip().rstrip('/')
-    allowed = {configured, *TRUSTED_ORIGINS}
-    # Loopback only for local developer testing.
-    host = req.headers.get('host', '').strip().lower()
-    if host.startswith(('localhost:', '127.0.0.1:')) or host in ('localhost','127.0.0.1'):
-        allowed.add('http://' + host)
-    if origin.lower() not in {a.lower() for a in allowed}:
-        raise HTTPException(403, 'Origin not allowed')
-
 def enforce_csrf(req,token):
-    check_origin(req)
-    if not csrf_ok(req,token): raise HTTPException(403,'Invalid form token; refresh page')
+    # A synchronizer CSRF token is generated on GET and required on every POST.
+    # Do not compare Origin to Render's proxy-facing URL: proxies and browsers
+    # may vary these headers. SameSite=Lax and a per-session secret token
+    # protect the form without an unreliable deployment-specific origin check.
+    if not csrf_ok(req, token):
+        raise HTTPException(403, 'Invalid form token; refresh page')
+
 def redirect(location): return RedirectResponse(location,status_code=303)
 def render(req,name,**kw): return templates.TemplateResponse(req,name,{'logged_in':authorized(req),'provider_logged_in':provider_authorized(req),'csrf_token':new_csrf(req),'public_enabled':PUBLIC_INTAKE_ENABLED,**kw})
 
