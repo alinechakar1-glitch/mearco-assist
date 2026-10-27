@@ -62,9 +62,19 @@ def new_csrf(req):
     return req.session['csrf']
 def csrf_ok(req,token): return bool(token) and secrets.compare_digest(str(token),str(req.session.get('csrf','')))
 def check_origin(req):
-    origin=req.headers.get('origin','').rstrip('/')
-    host=f'{req.url.scheme}://{req.headers.get("host","")}'
-    if origin and origin not in [host,*TRUSTED_ORIGINS]: raise HTTPException(403,'Origin not allowed')
+    # Render terminates HTTPS before forwarding traffic to the Python server.
+    # req.url.scheme can therefore be http even when the browser sends
+    # Origin: https://mearco-assist.onrender.com.
+    origin=req.headers.get('origin','').strip().rstrip('/')
+    hostname=req.headers.get('host','').strip().lower()
+    allowed=set(TRUSTED_ORIGINS)
+    if hostname:
+        allowed.add(f'https://{hostname}')
+        # Local development is allowed over HTTP; the public Render domain is not.
+        if hostname.startswith(('localhost','127.0.0.1')):
+            allowed.add(f'http://{hostname}')
+    if origin and origin not in allowed:
+        raise HTTPException(403,'Origin not allowed')
 
 def enforce_csrf(req,token):
     check_origin(req)
