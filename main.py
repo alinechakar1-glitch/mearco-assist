@@ -23,7 +23,7 @@ if not ADMIN_PASSWORD or not SESSION_SECRET:
 app=FastAPI(title='MEARCO Assist 24/7 — Standalone')
 
 @app.get('/version')
-def version(): return {'version': '0.2.3', 'csrf_protection': 'session-form-token'}
+def version(): return {'version': '0.4.0', 'csrf_protection': 'session-form-token'}
 
 @app.middleware('http')
 async def security_headers(request,call_next):
@@ -193,6 +193,28 @@ def validate_fields(name,phone,plate,location,notes):
     if not 6<=len(phone.strip())<=30: raise HTTPException(400,'Please enter a valid contact number')
     if len(plate)>40 or len(location)>350 or len(notes)>2500: raise HTTPException(400,'Request field too long')
 
+# Safe, stand-alone demo: accepts only server-generated fictional records.
+# It is available even while public customer intake stays disabled.
+@app.get('/demo/assist', response_class=HTMLResponse)
+def demo_assist(request:Request):
+    return render(request,'demo_assist.html')
+
+@app.post('/demo/assist')
+def demo_assist_submit(request:Request,case_type:str=Form('Towing'),area:str=Form('Jbeil'),csrf_token:str=Form('')):
+    enforce_csrf(request,csrf_token)
+    if case_type not in ('Towing','Motor accident','Complaint','Claim follow-up'):
+        raise HTTPException(400,'Invalid demo request type')
+    if area not in ('Jbeil','Jounieh','Beirut','Batroun'):
+        raise HTTPException(400,'Invalid demo location')
+    limit_request(request)
+    with conn() as db:
+        cur=db.execute('INSERT INTO cases(created_at,client_name,phone,plate,location,case_type,status,notes,provider,eta) VALUES(?,?,?,?,?,?,?,?,?,?)',
+            (now(),'DEMO CLIENT — TEST ONLY','00000000','DEMO-0001',area,case_type,'New','DEMO RECORD: no real customer, do not dispatch','',''))
+        cid=cur.lastrowid
+        db.execute('INSERT INTO case_events(case_id,created_at,actor,event) VALUES(?,?,?,?)',
+            (cid,now(),'Demo customer','TEST ONLY — dummy assistance request created'))
+    return render(request,'demo_submitted.html',case_id=cid)
+
 @app.get('/assist',response_class=HTMLResponse)
 def assist(request:Request):
     return render(request,'assist.html',intake_enabled=PUBLIC_INTAKE_ENABLED)
@@ -260,3 +282,39 @@ def provider_job_update(request:Request,case_id:int,status:str=Form(...),driver:
         db.execute('INSERT INTO provider_jobs(case_id,assigned_driver,provider_note,updated_at) VALUES(?,?,?,?) ON CONFLICT(case_id) DO UPDATE SET assigned_driver=excluded.assigned_driver,provider_note=excluded.provider_note,updated_at=excluded.updated_at',(case_id,driver[:120],note[:1000],now()))
         db.execute('INSERT INTO case_events(case_id,created_at,actor,event) VALUES(?,?,?,?)',(case_id,now(),'Towing provider',f'{status}; driver: {driver[:120]}; note: {note[:1000]}'))
     return redirect('/provider')
+
+
+# Browser-based conversation demo. Never accepts genuine personal information.
+# Only synthetic records are created in the employee dashboard.
+@app.get('/chat',response_class=HTMLResponse)
+def chat_demo(request:Request):
+    return render(request,'chat.html')
+
+@app.post('/api/chat-demo/submit')
+async def chat_demo_submit(request:Request):
+    try:
+        data=await request.json()
+    except Exception:
+        raise HTTPException(400,'Invalid request')
+    enforce_csrf(request,str(data.get('csrf_token','')))
+    case_type=data.get('case_type')
+    area=data.get('area')
+    issue=data.get('issue')
+    safe=data.get('safe')
+    if case_type not in ('Towing','Motor accident','Complaint','Claim follow-up'):
+        raise HTTPException(400,'Invalid category')
+    if area not in ('Jbeil','Jounieh','Beirut','Batroun'):
+        raise HTTPException(400,'Invalid area')
+    if issue not in ('Breakdown','Flat tire','Collision','Other'):
+        raise HTTPException(400,'Invalid scenario')
+    if safe not in ('Yes','No','Unsure'):
+        raise HTTPException(400,'Invalid safety answer')
+    limit_request(request)
+    with conn() as db:
+        cur=db.execute('INSERT INTO cases(created_at,client_name,phone,plate,location,case_type,status,notes,provider,eta) VALUES(?,?,?,?,?,?,?,?,?,?)',
+            (now(),'DEMO CHAT CLIENT — NOT REAL','00000000','DEMO-CHAT',area,case_type,'Escalated' if safe!='Yes' else 'New',
+             f'TEST CHAT — NO REAL REQUEST. Scenario: {issue}. Safe: {safe}. Do not dispatch.','',''))
+        cid=cur.lastrowid
+        db.execute('INSERT INTO case_events(case_id,created_at,actor,event) VALUES(?,?,?,?)',
+           (cid,now(),'Website chat demo','TEST ONLY — fictional chatbot request. Do not dispatch.'))
+    return {'case_ref':f'MA-{cid:06d}','demo':True}
