@@ -1,0 +1,3 @@
+Tow ID,Towing Date,Plate,Chassis,From Location,To Location,Provider,Service Status
+TW-001,2026-10-01,123456/B,,Jbeil,Jounieh,Example Provider,Completed
+TW-002,2026-10-02,123456/B,,Beirut,Jounieh,Example Provider,Cancelled
