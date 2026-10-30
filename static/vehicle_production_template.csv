@@ -1,0 +1,2 @@
+policy_number,insured_name,phone,plate,chassis,start_date,end_date,towing_limit,status
+01/MO/123,Demo Client,03000000,123456/B,VIN1234,2026-01-01,2026-12-31,3,Active
