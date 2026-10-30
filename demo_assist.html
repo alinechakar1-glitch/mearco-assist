@@ -1,9 +1,0 @@
-{% extends 'base.html' %}{% block content %}
-<div class="heading"><div><h1>Test a customer request</h1><p>Simulate the client experience, then find the case in your MEARCO dashboard.</p></div><span class="chip">TEST MODE</span></div>
-<div class="notice"><b>DEMO ONLY — no real dispatch.</b> This form sends fictional information to your prototype database. Never enter a real client's name, telephone, location or policy number.</div>
-<div class="two"><section class="card"><h2>Request roadside help</h2><form method="post" action="/demo/assist"><input type="hidden" name="csrf_token" value="{{csrf_token}}">
-<label>Type of request<select name="case_type"><option>Towing</option><option>Motor accident</option><option>Claim follow-up</option><option>Complaint</option></select></label>
-<label>Example location<select name="area"><option>Jbeil</option><option>Jounieh</option><option>Beirut</option><option>Batroun</option></select></label>
-<p><b>Client:</b> DEMO CLIENT — TEST ONLY<br><b>Plate:</b> DEMO-0001<br><b>Phone:</b> 00000000</p>
-<button type="submit">Create test assistance case</button></form></section><section class="card"><h2>What happens next?</h2><ol><li>A numbered test request is created.</li><li>Log in as MEARCO staff to see it on the dashboard.</li><li>Open the case and enter a provider and status.</li><li>If you configured a provider login, inspect the assignment there.</li></ol><p><a href="/assist">Return to public service page</a></p></section></div>
-{% endblock %}
