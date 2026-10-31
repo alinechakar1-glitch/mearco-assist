@@ -15,7 +15,7 @@ from openpyxl import load_workbook
 DATABASE_URL=os.getenv('DATABASE_URL','sqlite:///./mearco.db')
 if DATABASE_URL.startswith('postgres://'): DATABASE_URL=DATABASE_URL.replace('postgres://','postgresql+psycopg://',1)
 if DATABASE_URL.startswith('postgresql://'): DATABASE_URL=DATABASE_URL.replace('postgresql://','postgresql+psycopg://',1)
-SECRET=os.getenv('JWT_SECRET','')
+SECRET=os.getenv('JWT_SECRET') or os.getenv('SESSION_SECRET','')
 if not SECRET: SECRET=secrets.token_urlsafe(48); print('WARNING: ephemeral JWT secret; set JWT_SECRET in production')
 engine=create_engine(DATABASE_URL,connect_args={'check_same_thread':False} if DATABASE_URL.startswith('sqlite') else {},pool_pre_ping=True)
 SessionLocal=sessionmaker(bind=engine)
@@ -41,6 +41,39 @@ class Audit(Base):
  id=Column(Integer,primary_key=True); actor=Column(String(120)); action=Column(String(120)); detail=Column(Text); at=Column(DateTime,default=dt.datetime.utcnow)
 Base.metadata.create_all(engine)
 app=FastAPI(title='MEARCO Unified Pilot',version='1.0.0')
+
+@app.on_event('startup')
+def ensure_admin_account():
+ """Provision admin from Render environment, no shell required.
+
+ Set ADMIN_PASSWORD in Render and optionally ADMIN_USERNAME (default: admin).
+ This also updates the existing admin password if the configured value changes.
+ Other users and their passwords are never touched.
+ """
+ admin_username = os.getenv('ADMIN_USERNAME', 'admin').strip()
+ admin_password = os.getenv('ADMIN_PASSWORD', '')
+ if not admin_password:
+  print('ADMIN SETUP: ADMIN_PASSWORD is missing; administrator auto-setup skipped.')
+  return
+ if not admin_username or len(admin_username) > 120:
+  raise RuntimeError('ADMIN_USERNAME must be between 1 and 120 characters.')
+ if len(admin_password) < 12 or len(admin_password.encode('utf-8')) > 72:
+  raise RuntimeError('ADMIN_PASSWORD must be at least 12 characters and at most 72 UTF-8 bytes (bcrypt limit).')
+ with SessionLocal() as session:
+  existing = session.scalar(select(User).where(User.username == admin_username))
+  if existing is None:
+   session.add(User(username=admin_username, pw=crypt.hash(admin_password), role='admin'))
+   session.commit()
+   print('ADMIN SETUP: Administrator account created successfully.')
+  else:
+   password_matches = crypt.verify(admin_password, existing.pw)
+   if not password_matches or existing.role != 'admin':
+    if not password_matches:
+     existing.pw = crypt.hash(admin_password)
+    existing.role = 'admin'
+    session.commit()
+   print('ADMIN SETUP: Administrator account ready.')
+
 origins=[x.strip() for x in os.getenv('CORS_ORIGINS','http://localhost:8081,http://localhost:19006').split(',') if x.strip()]
 app.add_middleware(CORSMiddleware,allow_origins=origins,allow_methods=['GET','POST','PATCH'],allow_headers=['*'])
 def db():
