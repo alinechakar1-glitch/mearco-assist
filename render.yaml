@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: mearco-unified-pilot
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mearco-unified-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://your-mearco-domain.example
+databases:
+  - name: mearco-unified-db
+    databaseName: mearco_unified
+    user: mearco_unified

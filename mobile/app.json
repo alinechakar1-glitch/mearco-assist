@@ -1,0 +1,1 @@
+{"expo":{"name":"MEARCO ONE","slug":"mearco-one","scheme":"mearcoone","version":"0.1.0","orientation":"portrait","ios":{"bundleIdentifier":"com.mearco.one"},"android":{"package":"com.mearco.one"},"plugins":["expo-router","expo-secure-store"],"extra":{"eas":{"projectId":"REPLACE_WITH_EXPO_PROJECT_ID"}}}}
