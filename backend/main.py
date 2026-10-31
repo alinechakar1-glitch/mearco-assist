@@ -1,5 +1,5 @@
 """MEARCO ONE pilot API. Payment gateway/voice/WhatsApp are NOT active integrations."""
-import os, io, secrets, datetime as dt
+import os, io, secrets, datetime as dt, hashlib, re
 from decimal import Decimal
 from typing import Literal
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Header
@@ -36,6 +36,17 @@ class Provider(Base):
 class Payment(Base):
  __tablename__='payments'
  id=Column(Integer,primary_key=True); policy_id=Column(Integer,ForeignKey('policies.id')); amount=Column(Numeric(14,2)); status=Column(String(35),default='pending'); reference=Column(String(120),unique=True); checkout_url=Column(String(1000),default=''); created=Column(DateTime,default=dt.datetime.utcnow)
+class TowingHistory(Base):
+ __tablename__='towing_history'
+ id=Column(Integer,primary_key=True)
+ fingerprint=Column(String(64),unique=True,index=True)
+ service_date=Column(Date,index=True)
+ plate=Column(String(100)); normalized_plate=Column(String(100),index=True)
+ policy_text=Column(String(160)); kind=Column(String(60)); origin=Column(String(200)); destination=Column(String(200))
+ phone=Column(String(100)); car_type=Column(String(120)); remarks=Column(Text)
+ policy_id=Column(Integer,ForeignKey('policies.id'),nullable=True,index=True)
+ match_status=Column(String(40),default='unmatched')
+
 class Audit(Base):
  __tablename__='audit'
  id=Column(Integer,primary_key=True); actor=Column(String(120)); action=Column(String(120)); detail=Column(Text); at=Column(DateTime,default=dt.datetime.utcnow)
@@ -123,7 +134,9 @@ def policy(pid:int,u:User=Depends(user),s:Session=Depends(db)): return pol(polic
 @app.get('/policies/{pid}/towing-balance')
 def towing_balance(pid:int,u:User=Depends(user),s:Session=Depends(db)):
  p=policy_access(s,u,pid)
- used=s.scalar(select(func.count(Case.id)).where(Case.policy_id==pid,Case.category=='towing',Case.status!='declined')) or 0
+ used=s.scalar(select(func.count(Case.id)).where(Case.policy_id==pid,Case.category=='towing',Case.status.notin_(['declined','cancelled']))) or 0
+ historical=s.scalar(select(func.count(TowingHistory.id)).where(TowingHistory.policy_id==pid,TowingHistory.match_status=='matched',TowingHistory.kind=='mechanical')) or 0
+ used+=historical
  valid=bool(p.status=='active' and p.start<=dt.date.today()<=p.end)
  return {'entitled':p.towing_total,'used':used,'remaining':max(0,p.towing_total-used),'policy_in_force':valid,'note':'Manual eligibility review required for exceptions and policy terms'}
 @app.post('/cases')
@@ -131,7 +144,8 @@ def open_case(v:CaseIn,u:User=Depends(user),s:Session=Depends(db)):
  p=policy_access(s,u,v.policy_id)
  if u.role=='provider':raise HTTPException(403)
  if v.category=='towing':
-  used=s.scalar(select(func.count(Case.id)).where(Case.policy_id==p.id,Case.category=='towing',Case.status!='declined')) or 0
+  used=s.scalar(select(func.count(Case.id)).where(Case.policy_id==p.id,Case.category=='towing',Case.status.notin_(['declined','cancelled']))) or 0
+  used+=(s.scalar(select(func.count(TowingHistory.id)).where(TowingHistory.policy_id==p.id,TowingHistory.match_status=='matched',TowingHistory.kind=='mechanical')) or 0)
   if p.product.lower()!='motor' or p.status!='active' or not(p.start<=dt.date.today()<=p.end) or used>=p.towing_total: raise HTTPException(409,'No confirmed towing entitlement; call MEARCO for manual review')
  c=Case(policy_id=p.id,category=v.category,description=v.description,address=v.address);s.add(c);s.flush();audit(s,u,'create_case',c.id);s.commit();return case_obj(c)
 @app.get('/cases')
@@ -240,3 +254,120 @@ def web_app_alias(): return web_app()
 def integration_status(u:User=Depends(user)):
  roles(u,'admin','staff')
  return {'original_assist_recreated':True,'original_v07_exact_code_merged':False,'mobile_app':'source included','payment_gateway':'not connected','voice_AI':'not connected','whatsapp':'not connected','store_release':'not published','database':'configured'}
+
+
+# SWIFT production and towing-company history: independent, repeatable imports.
+def _plate(v):
+ return re.sub(r'[^A-Z0-9]', '',str(v or '').upper())
+def _date(v):
+ if isinstance(v,dt.datetime):return v.date()
+ if isinstance(v,dt.date):return v
+ if v is None or str(v).strip()=='':return None
+ return dt.date.fromisoformat(str(v).strip()[:10])
+def _text(v): return str(v or '').strip()
+def _tow_kind(raw):
+ t=_text(raw).lower()
+ if 'mechan' in t or 'mecan' in t or 'ميكاني' in t:return 'mechanical'
+ if 'accident' in t or 'حادث' in t:return 'accident'
+ return 'other'
+def _entitlement(notes):
+ # Defaults only where policy notes explicitly describe a limit. Unknown => 0 pending manual review.
+ t=_text(notes).lower()
+ m=re.search(r'(\d+)\s*mechanical',t)
+ if not m:m=re.search(r'(\d+)\s*mech',t)
+ return int(m.group(1)) if m else 0
+
+def _rowdict(row, headers):return {headers[i]:row[i] if i<len(row) else None for i in range(len(headers))}
+
+def _rows(file_bytes, sheet):
+ w=load_workbook(io.BytesIO(file_bytes),read_only=True,data_only=True)
+ if sheet not in w.sheetnames:raise HTTPException(400,'Expected sheet '+sheet)
+ return w,w[sheet].iter_rows(values_only=True)
+
+@app.post('/admin/import/swift-production')
+async def import_swift_production(file:UploadFile=File(...),u:User=Depends(user),s:Session=Depends(db)):
+ roles(u,'admin')
+ raw=await file.read()
+ if len(raw)>20_000_000:raise HTTPException(413,'Maximum 20MB')
+ try:
+  w,rows=_rows(raw,'PRD');head=tuple(_text(x).lower() for x in next(rows))
+  required=('policy','insured','plate no.','effective','expiry','notes')
+  if not all(x in head for x in required):raise ValueError('Invalid SWIFT PRD headers')
+  old={p.number:p for p in s.scalars(select(Policy)).all()}
+  created=updated=skipped=0;errors=[]
+  for n,values in enumerate(rows,2):
+   try:
+    d=_rowdict(values,head);number=_text(d['policy']);start=_date(d['effective']);end=_date(d['expiry'])
+    if not number or not start or not end or start>end:skipped+=1;continue
+    p=old.get(number)
+    if p is None:
+     p=Policy(number=number,product='Motor',premium=0,due=0,customer_code='',broker_code='');s.add(p);old[number]=p;created+=1
+    else:updated+=1
+    p.customer_name=_text(d['insured']);p.plate=_text(d['plate no.']);p.start=start;p.end=end
+    p.status='active' if start<=dt.date.today()<=end else 'expired' if end<dt.date.today() else 'future'
+    p.towing_total=_entitlement(d.get('notes'))
+    # No 'premium' in production file. 'Prem Due TO $' is not validated outstanding receivable.
+    # Never change p.premium, p.due, customer/broker codes, claims or towing history.
+   except Exception as exc:
+    errors.append({'row':n,'error':str(exc)[:160]})
+    if len(errors)>30:break
+  if errors:s.rollback();return {'created':0,'updated':0,'skipped':skipped,'errors':errors,'committed':False}
+  audit(s,u,'swift_production_import',f'created={created} updated={updated} skipped={skipped}');s.commit();w.close()
+  return {'created':created,'updated':updated,'skipped':skipped,'committed':True,'note':'Financial due/premium and existing claims/towing not overwritten. Mechanical entitlement inferred only from policy notes; verify wording.'}
+ except HTTPException:raise
+ except Exception as exc:s.rollback();raise HTTPException(400,f'Import validation: {str(exc)[:200]}')
+
+@app.post('/admin/import/towing-history')
+async def import_towing_history(file:UploadFile=File(...),u:User=Depends(user),s:Session=Depends(db)):
+ roles(u,'admin');raw=await file.read()
+ if len(raw)>20_000_000:raise HTTPException(413,'Maximum 20MB')
+ try:
+  w=load_workbook(io.BytesIO(raw),read_only=True,data_only=True);sh=w.active;rows=sh.iter_rows(values_only=True)
+  headers=tuple(_text(x).strip().lower() for x in next(rows))
+  if not all(x in headers for x in ('date','kind of tow','from','to','plate')):raise ValueError('Missing towing history columns')
+  existing=set(s.scalars(select(TowingHistory.fingerprint)).all())
+  policies=list(s.scalars(select(Policy)).all());byplate={}
+  for p in policies:
+   if _plate(p.plate):byplate.setdefault(_plate(p.plate),[]).append(p)
+  added=duplicate=unmatched=ambiguous=matched=0;errors=[]
+  for n,vals in enumerate(rows,2):
+   try:
+    d=_rowdict(vals,headers);day=_date(d['date'])
+    if not day:continue
+    plate=_text(d.get('plate'));norm=_plate(plate);kind=_tow_kind(d.get('kind of tow'))
+    remarks=_text(d.get('remarks'))
+    # Clearly cancelled services must not count as usage.
+    cancelled=('cancel' in remarks.lower() or 'annul' in remarks.lower())
+    parts=[_text(d.get(k)).upper() for k in ('date','phone','kind of tow','from','to','plate','car type','number','policy','remarks')]
+    parts[0]=day.isoformat()
+    digest=hashlib.sha256('\x1f'.join(parts).encode()).hexdigest()
+    if digest in existing:duplicate+=1;continue
+    candidates=[p for p in byplate.get(norm,[]) if p.start and p.end and p.start<=day<=p.end] if norm else []
+    # Do not assign if more than one overlapping policy.
+    status='cancelled' if cancelled else 'matched' if len(candidates)==1 else 'ambiguous' if len(candidates)>1 else 'unmatched'
+    pid=candidates[0].id if status=='matched' else None
+    if status=='matched':matched+=1
+    elif status=='ambiguous':ambiguous+=1
+    else:unmatched+=1
+    record=TowingHistory(fingerprint=digest,service_date=day,plate=plate,normalized_plate=norm,policy_text=_text(d.get('number')),kind=kind,origin=_text(d.get('from')),destination=_text(d.get('to')),phone=_text(d.get('phone')),car_type=_text(d.get('car type')),remarks=remarks,policy_id=pid,match_status=status)
+    s.add(record);s.flush();existing.add(digest);added+=1
+   except Exception as exc:
+    errors.append({'row':n,'error':str(exc)[:160]})
+    if len(errors)>30:break
+  if errors:s.rollback();return {'added':0,'errors':errors,'committed':False}
+  audit(s,u,'towing_history_import',f'added={added} matched={matched} review={unmatched+ambiguous} duplicates={duplicate}');s.commit();w.close()
+  return {'added':added,'matched':matched,'unmatched_or_cancelled':unmatched,'ambiguous':ambiguous,'duplicates_skipped':duplicate,'committed':True,'note':'Only uniquely date-matched mechanical tows reduce mechanical balance. Accident tows are tracked separately.'}
+ except HTTPException:raise
+ except Exception as exc:s.rollback();raise HTTPException(400,f'Towing import validation: {str(exc)[:200]}')
+
+@app.get('/admin/towing-review')
+def towing_review(limit:int=100,u:User=Depends(user),s:Session=Depends(db)):
+ roles(u,'admin','staff')
+ limit=max(1,min(limit,500))
+ q=select(TowingHistory).where(TowingHistory.match_status.in_(['ambiguous','unmatched'])).order_by(TowingHistory.service_date.desc()).limit(limit)
+ return [{'id':t.id,'date':t.service_date.isoformat(),'plate':t.plate,'type':t.kind,'from':t.origin,'to':t.destination,'status':t.match_status,'policy_text':t.policy_text} for t in s.scalars(q).all()]
+
+@app.get('/admin/towing-import-summary')
+def towing_history_summary(u:User=Depends(user),s:Session=Depends(db)):
+ roles(u,'admin','staff')
+ return {x:(s.scalar(select(func.count(TowingHistory.id)).where(TowingHistory.match_status==x)) or 0) for x in ['matched','unmatched','ambiguous','cancelled']}
